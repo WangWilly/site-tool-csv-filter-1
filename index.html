@@ -1,62 +1,277 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>名單篩選與匯出工具</title>
-
-  <!-- Tailwind CSS -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CSV 名單篩選與匯出工具</title>
+  
+  <!-- 載入 Tailwind CSS (CDN 版) -->
   <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- 載入 Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
 
-  <!-- Import map: resolve bare module specifiers for Babel standalone -->
-  <script type="importmap">
-  {
-    "imports": {
-      "react":            "https://esm.sh/react@18",
-      "react/jsx-runtime":"https://esm.sh/react@18/jsx-runtime",
-      "react-dom/client": "https://esm.sh/react-dom@18/client",
-      "lucide-react":     "https://esm.sh/lucide-react@0.468.0?external=react"
+  <style>
+    /* 自訂樣式以彌補 CDN 版 Tailwind 無法處理的部分複雜狀態 */
+    .row-excluded {
+      background-color: rgba(254, 226, 226, 0.8) !important; /* bg-red-50/80 */
     }
-  }
-  </script>
-
-  <!-- Babel standalone (transforms JSX → JS at runtime, supports ES-module mode) -->
-  <script src="https://unpkg.com/@babel/standalone@7.27.1/babel.min.js"></script>
+    .row-excluded:hover {
+      background-color: rgb(254, 202, 202) !important; /* hover:bg-red-100 */
+    }
+    .row-excluded td:not(:first-child) {
+      color: rgba(153, 27, 27, 0.6); /* text-red-800/60 */
+      text-decoration: line-through;
+    }
+    .row-included:hover {
+      background-color: rgba(238, 242, 255, 0.4); /* hover:bg-indigo-50/40 */
+    }
+    .row-included .check-icon {
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .row-included:hover .check-icon {
+      opacity: 1;
+    }
+    /* 隱藏預設捲軸，讓表格更好看 */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9; 
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1; 
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8; 
+    }
+    
+    /* 拖拉時的遮罩動畫 */
+    @keyframes bounce {
+      0%, 100% { transform: translateY(-25%); animation-timing-function: cubic-bezier(0.8,0,1,1); }
+      50% { transform: none; animation-timing-function: cubic-bezier(0,0,0.2,1); }
+    }
+    .animate-bounce {
+      animation: bounce 1s infinite;
+    }
+  </style>
 </head>
-<body class="antialiased">
-  <div id="root"></div>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen relative transition-colors duration-200" id="drop-zone">
 
-  <script type="text/babel" data-type="module" data-presets="react">
-    import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-    import { createRoot } from 'react-dom/client';
-    import { Upload, Download, Search, FileText, X, Filter, Trash2, Info, Ban, CheckCircle2, FileUp, ExternalLink, AlertTriangle } from 'lucide-react';
+  <!-- 拖拉遮罩 -->
+  <div id="drag-overlay" class="fixed inset-0 z-50 flex items-center justify-center bg-indigo-500/10 backdrop-blur-sm border-4 border-indigo-500 border-dashed m-4 rounded-3xl pointer-events-none hidden">
+    <div class="bg-white p-8 rounded-2xl shadow-xl flex flex-col items-center gap-4">
+      <i data-lucide="file-up" class="w-16 h-16 text-indigo-600 animate-bounce"></i>
+      <h2 class="text-2xl font-bold text-slate-800">放開滑鼠即可載入 CSV</h2>
+      <p class="text-slate-500">放開以覆蓋並讀取您的檔案</p>
+    </div>
+  </div>
+
+  <!-- 確認關閉 Modal -->
+  <div id="confirm-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm hidden">
+    <div class="bg-white rounded-2xl shadow-xl max-w-sm w-full overflow-hidden transform transition-all">
+      <div class="p-6">
+        <div class="flex items-center justify-center w-12 h-12 bg-red-100 rounded-full mb-4 mx-auto">
+          <i data-lucide="alert-triangle" class="text-red-600 w-6 h-6"></i>
+        </div>
+        <h3 class="text-lg font-bold text-slate-900 text-center mb-2">確定要關閉檔案嗎？</h3>
+        <p class="text-slate-500 text-sm text-center">
+          這將會清除您目前所有的過濾條件，以及<strong class="text-red-500 font-medium" id="modal-excluded-count">標記排除 (0 筆)</strong>的紀錄。此動作無法復原。
+        </p>
+      </div>
+      <div class="bg-slate-50 px-6 py-4 flex gap-3 justify-end border-t border-slate-100">
+        <button id="btn-cancel-close" class="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors flex-1 md:flex-none">
+          取消
+        </button>
+        <button id="btn-confirm-close" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors flex-1 md:flex-none">
+          確定關閉
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="p-4 md:p-8 max-w-[1400px] mx-auto space-y-4">
+    
+    <!-- 頂部操作列 -->
+    <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-5 rounded-2xl shadow-sm border border-slate-200 relative z-10">
+      <div>
+        <h1 class="text-2xl font-bold flex items-center gap-2 text-slate-900">
+          <i data-lucide="file-text" class="text-indigo-600"></i>
+          名單篩選與匯出工具
+        </h1>
+        <p class="text-slate-500 mt-1 text-sm flex items-center gap-1.5">
+          <i data-lucide="info" class="w-3.5 h-3.5 text-indigo-400"></i>
+          支援直接拖拉檔案 / 雙擊資料可標記為排除 / 網址可直接點擊
+        </p>
+      </div>
+      
+      <div class="flex items-center gap-3 w-full md:w-auto">
+        <input type="file" id="file-input" accept=".csv" class="hidden" />
+        
+        <button id="btn-upload" class="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-lg transition-colors font-medium shadow-sm">
+          <i data-lucide="upload" class="w-4.5 h-4.5"></i>
+          <span id="upload-text">上傳 CSV</span>
+        </button>
+        
+        <button id="btn-export" class="hidden flex-1 md:flex-none flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg transition-colors font-medium shadow-sm bg-indigo-600 hover:bg-indigo-700 text-white">
+          <i data-lucide="download" class="w-4.5 h-4.5"></i>
+          <span id="export-text">匯出結果 (0)</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- 工作區 (預設隱藏) -->
+    <div id="workspace" class="hidden bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col relative z-10">
+      
+      <!-- 篩選控制區塊 -->
+      <div class="p-4 border-b border-slate-200 bg-slate-50/50">
+        <div class="flex flex-col md:flex-row gap-4 items-center justify-between">
+          
+          <!-- 狀態標籤 -->
+          <div class="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
+            <span id="badge-filename" class="bg-indigo-100 text-indigo-800 text-xs font-semibold px-2.5 py-1.5 rounded-md whitespace-nowrap">名單：</span>
+            <span id="badge-total" class="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-1.5 rounded-md whitespace-nowrap">總覽：0 筆</span>
+            <span id="badge-excluded" class="hidden bg-red-100 text-red-700 text-xs font-semibold px-2.5 py-1.5 rounded-md whitespace-nowrap flex items-center gap-1">
+              <i data-lucide="ban" class="w-3 h-3"></i> 已排除：0 筆
+            </span>
+          </div>
+
+          <!-- 右側控制：搜尋與清除 -->
+          <div class="flex gap-3 w-full md:w-auto items-center">
+            <div class="relative w-full md:w-64 group">
+              <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <i data-lucide="search" class="w-4 h-4 text-slate-400 group-focus-within:text-indigo-500"></i>
+              </div>
+              <input type="text" id="global-search" class="block w-full pl-9 pr-8 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white transition-shadow text-sm" placeholder="全域搜尋..." />
+              <button id="btn-clear-search" class="hidden absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600">
+                <i data-lucide="x" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+            
+            <button id="btn-clear-filters" title="清除所有過濾條件" class="hidden p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors">
+              <i data-lucide="filter" class="w-4.5 h-4.5"></i>
+            </button>
+            <button id="btn-prompt-close" title="關閉並清除資料" class="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors">
+              <i data-lucide="trash-2" class="w-4.5 h-4.5"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 資料表格 -->
+      <div class="overflow-x-auto relative max-h-[65vh]">
+        <table class="w-full text-left text-sm text-slate-600">
+          <thead id="table-head" class="text-xs text-slate-700 uppercase bg-slate-100 sticky top-0 z-10 shadow-sm">
+            <!-- Header rows will be injected here -->
+          </thead>
+          <tbody id="table-body" class="divide-y divide-slate-100">
+            <!-- Data rows will be injected here -->
+          </tbody>
+        </table>
+      </div>
+      
+      <!-- 底部狀態列 -->
+      <div class="bg-slate-50 px-5 py-3 border-t border-slate-200 text-xs text-slate-500 flex justify-between items-center">
+        <span id="footer-status">
+          顯示 0 筆結果 (將匯出 <strong class="text-indigo-600">0</strong> 筆)
+        </span>
+        <span class="hidden md:inline text-slate-400">
+          提示：直接雙擊行即可標記為排除 (紅色) / 點擊藍色文字可開啟網頁
+        </span>
+      </div>
+    </div>
+
+    <!-- 初始空狀態 -->
+    <div id="empty-state" class="bg-white rounded-2xl shadow-sm border-2 border-indigo-100 hover:border-indigo-300 border-dashed p-12 flex flex-col items-center justify-center text-center space-y-5 min-h-[500px] cursor-pointer transition-colors relative z-10 group">
+      <div class="w-20 h-20 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+        <i data-lucide="file-up" class="w-10 h-10"></i>
+      </div>
+      <div>
+        <h3 class="text-xl font-bold text-slate-800 mb-2">將 CSV 檔案拖放至此</h3>
+        <p class="text-slate-500 max-w-md mx-auto leading-relaxed">
+          或點擊此處選擇檔案。<br/>上傳後您可以輕鬆篩選欄位、<strong class="text-red-500">雙擊剔除不要的名單</strong>，最後匯出乾淨的 CSV。
+        </p>
+      </div>
+      <button class="mt-2 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl transition-all font-medium pointer-events-none">
+        <i data-lucide="upload" class="w-5 h-5"></i>
+        選擇 CSV 檔案
+      </button>
+    </div>
+    
+  </div>
+
+  <!-- JavaScript 邏輯 -->
+  <script>
+    // --- 狀態管理 ---
+    let state = {
+      fileName: '',
+      headers: [],
+      data: [], // Array of { id, cells: [] }
+      globalSearch: '',
+      columnFilters: {}, // { index: value }
+      excludedRowIds: new Set(),
+      isDragging: false
+    };
+
+    // --- DOM 元素 ---
+    const dropZone = document.getElementById('drop-zone');
+    const dragOverlay = document.getElementById('drag-overlay');
+    const fileInput = document.getElementById('file-input');
+    const btnUpload = document.getElementById('btn-upload');
+    const uploadText = document.getElementById('upload-text');
+    const btnExport = document.getElementById('btn-export');
+    const exportText = document.getElementById('export-text');
+    
+    const workspace = document.getElementById('workspace');
+    const emptyState = document.getElementById('empty-state');
+    
+    const badgeFilename = document.getElementById('badge-filename');
+    const badgeTotal = document.getElementById('badge-total');
+    const badgeExcluded = document.getElementById('badge-excluded');
+    
+    const globalSearchInput = document.getElementById('global-search');
+    const btnClearSearch = document.getElementById('btn-clear-search');
+    const btnClearFilters = document.getElementById('btn-clear-filters');
+    const btnPromptClose = document.getElementById('btn-prompt-close');
+    
+    const tableHead = document.getElementById('table-head');
+    const tableBody = document.getElementById('table-body');
+    const footerStatus = document.getElementById('footer-status');
+
+    const confirmModal = document.getElementById('confirm-modal');
+    const btnCancelClose = document.getElementById('btn-cancel-close');
+    const btnConfirmClose = document.getElementById('btn-confirm-close');
+    const modalExcludedCount = document.getElementById('modal-excluded-count');
+
+    // --- 初始化 Lucide Icons ---
+    lucide.createIcons();
 
     // --- 工具函數 ---
-
-    // 產生唯一 ID
     const generateId = (index) => `row_${Date.now()}_${index}_${Math.random().toString(36).substring(2, 9)}`;
 
-    // 解析 CSV 字串為物件陣列
     const parseCSV = (text) => {
       const result = [];
       let row = [];
       let inQuotes = false;
       let value = "";
-
+      
       for (let i = 0; i < text.length; i++) {
         const char = text[i];
         const nextChar = text[i + 1];
 
         if (char === '"' && inQuotes && nextChar === '"') {
           value += '"';
-          i++; // 跳過跳脫的引號
+          i++; 
         } else if (char === '"') {
           inQuotes = !inQuotes;
         } else if (char === ',' && !inQuotes) {
           row.push(value);
           value = "";
         } else if ((char === '\n' || char === '\r') && !inQuotes) {
-          if (char === '\r' && nextChar === '\n') i++; // 處理 \r\n
+          if (char === '\r' && nextChar === '\n') i++; 
           row.push(value);
           result.push(row);
           row = [];
@@ -69,7 +284,7 @@
         row.push(value);
         result.push(row);
       }
-
+      
       const validRows = result.filter(r => r.some(cell => cell.trim() !== ''));
       if (validRows.length === 0) return { headers: [], data: [] };
 
@@ -82,7 +297,6 @@
       return { headers, data };
     };
 
-    // 將二維陣列轉換回 CSV 字串
     const unparseCSV = (headers, dataRows) => {
       const escapeCell = (cell) => {
         if (cell == null) return '""';
@@ -98,510 +312,385 @@
       return [headerRow, ...rows].join('\n');
     };
 
-    function App() {
-      const [fileName, setFileName] = useState('');
-      const [headers, setHeaders] = useState([]);
-      const [data, setData] = useState([]);
-      const [globalSearch, setGlobalSearch] = useState('');
-      const [columnFilters, setColumnFilters] = useState({});
-      const [excludedRowIds, setExcludedRowIds] = useState(new Set());
-      const [isDragging, setIsDragging] = useState(false);
-      const [showConfirmModal, setShowConfirmModal] = useState(false);
+    const escapeHTML = (str) => {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    };
 
-      const fileInputRef = useRef(null);
-      const dragCounter = useRef(0);
+    // --- 核心邏輯與渲染 ---
 
-      // --- 關閉網頁/重整防護機制 ---
-      useEffect(() => {
-        const handleBeforeUnload = (e) => {
-          if (data.length > 0) {
-            const message = '您還有未匯出的資料，確定要離開嗎？';
-            e.returnValue = message;
-            return message;
-          }
-        };
+    const updateUI = () => {
+      const hasData = state.data.length > 0;
+      
+      if (hasData) {
+        emptyState.classList.add('hidden');
+        workspace.classList.remove('hidden');
+        btnExport.classList.remove('hidden');
+        uploadText.textContent = '選擇其他檔案';
+      } else {
+        emptyState.classList.remove('hidden');
+        workspace.classList.add('hidden');
+        btnExport.classList.add('hidden');
+        uploadText.textContent = '上傳 CSV';
+      }
 
-        window.addEventListener('beforeunload', handleBeforeUnload);
+      if (!hasData) return;
 
-        return () => {
-          window.removeEventListener('beforeunload', handleBeforeUnload);
-        };
-      }, [data.length]);
+      // 1. 執行過濾
+      let filtered = state.data;
+      
+      if (state.globalSearch) {
+        const lowerSearch = state.globalSearch.toLowerCase();
+        filtered = filtered.filter(row => 
+          row.cells.some(cell => String(cell).toLowerCase().includes(lowerSearch))
+        );
+      }
 
-      // 處理檔案
-      const processFile = (file) => {
-        if (!file) return;
-        if (!file.name.toLowerCase().endsWith('.csv')) {
-          alert('請上傳 CSV 格式的檔案！');
-          return;
+      for (const [colIdx, term] of Object.entries(state.columnFilters)) {
+        if (term) {
+          const lowerTerm = term.toLowerCase();
+          filtered = filtered.filter(row => {
+            const cellValue = String(row.cells[colIdx] || '').toLowerCase();
+            return cellValue.includes(lowerTerm);
+          });
         }
+      }
 
-        setFileName(file.name);
-        const reader = new FileReader();
+      const rowsToExportCount = filtered.filter(row => !state.excludedRowIds.has(row.id)).length;
+      
+      // 2. 更新頂部狀態
+      badgeFilename.textContent = `名單：${state.fileName}`;
+      badgeTotal.textContent = `總覽：${filtered.length} 筆`;
+      
+      const excludedCountInView = filtered.filter(r => state.excludedRowIds.has(r.id)).length;
+      if (state.excludedRowIds.size > 0) {
+        badgeExcluded.innerHTML = `<i data-lucide="ban" class="w-3 h-3"></i> 已排除：${excludedCountInView} 筆`;
+        badgeExcluded.classList.remove('hidden');
+        badgeExcluded.classList.add('flex');
+      } else {
+        badgeExcluded.classList.add('hidden');
+        badgeExcluded.classList.remove('flex');
+      }
 
-        reader.onload = (event) => {
-          const text = event.target.result;
-          const { headers: parsedHeaders, data: parsedData } = parseCSV(text);
+      exportText.textContent = `匯出結果 (${rowsToExportCount})`;
+      if (rowsToExportCount > 0) {
+        btnExport.classList.remove('bg-slate-200', 'text-slate-400', 'cursor-not-allowed');
+        btnExport.classList.add('bg-indigo-600', 'hover:bg-indigo-700', 'text-white');
+      } else {
+        btnExport.classList.add('bg-slate-200', 'text-slate-400', 'cursor-not-allowed');
+        btnExport.classList.remove('bg-indigo-600', 'hover:bg-indigo-700', 'text-white');
+      }
 
-          if (parsedData.length > 0) {
-            setHeaders(parsedHeaders);
-            setData(parsedData);
-            setGlobalSearch('');
-            setColumnFilters({});
-            setExcludedRowIds(new Set());
-          } else {
-            alert('無法解析檔案或檔案為空。');
-          }
-        };
-        reader.readAsText(file, 'UTF-8');
-      };
+      if (state.globalSearch) {
+        btnClearSearch.classList.remove('hidden');
+      } else {
+        btnClearSearch.classList.add('hidden');
+      }
 
-      const handleFileUpload = (e) => {
-        processFile(e.target.files[0]);
-        e.target.value = '';
-      };
+      const isFiltered = state.globalSearch !== '' || Object.values(state.columnFilters).some(v => v !== '');
+      if (isFiltered) {
+        btnClearFilters.classList.remove('hidden');
+      } else {
+        btnClearFilters.classList.add('hidden');
+      }
 
-      // --- 拖拉事件處理 ---
-      const handleDragEnter = useCallback((e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dragCounter.current += 1;
-        if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
-          setIsDragging(true);
-        }
-      }, []);
+      // 3. 渲染表頭 (只需渲染一次或當檔案改變時，但為了簡單，每次有過濾就重新綁定)
+      let headHtml = `<tr><th class="px-3 py-3 border-b border-slate-200 w-12 text-center bg-slate-100">狀態</th>`;
+      state.headers.forEach((header, index) => {
+        const filterVal = state.columnFilters[index] || '';
+        headHtml += `
+          <th class="px-4 py-3 border-b border-slate-200 whitespace-nowrap min-w-[140px] bg-slate-100">
+            <div class="flex flex-col gap-2">
+              <span class="font-semibold text-slate-800">${escapeHTML(header)}</span>
+              <input type="text" data-col-index="${index}" placeholder="篩選 ${escapeHTML(header)}..." value="${escapeHTML(filterVal)}"
+                class="col-filter-input w-full px-2 py-1.5 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 font-normal normal-case placeholder-slate-400 bg-white shadow-sm" />
+            </div>
+          </th>`;
+      });
+      headHtml += `</tr>`;
+      tableHead.innerHTML = headHtml;
 
-      const handleDragLeave = useCallback((e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dragCounter.current -= 1;
-        if (dragCounter.current === 0) {
-          setIsDragging(false);
-        }
-      }, []);
-
-      const handleDragOver = useCallback((e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }, []);
-
-      const handleDrop = useCallback((e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsDragging(false);
-        dragCounter.current = 0;
-
-        const files = e.dataTransfer.files;
-        if (files && files.length > 0) {
-          processFile(files[0]);
-        }
-      }, []);
-
-      const handleColumnFilterChange = (colIndex, value) => {
-        setColumnFilters(prev => ({ ...prev, [colIndex]: value }));
-      };
-
-      const handleDoubleClickRow = (id) => {
-        if (window.getSelection) window.getSelection().removeAllRanges();
-        setExcludedRowIds(prev => {
-          const newSet = new Set(prev);
-          newSet.has(id) ? newSet.delete(id) : newSet.add(id);
-          return newSet;
+      // 綁定表頭輸入事件
+      document.querySelectorAll('.col-filter-input').forEach(input => {
+        input.addEventListener('input', (e) => {
+          const colIdx = e.target.getAttribute('data-col-index');
+          state.columnFilters[colIdx] = e.target.value;
+          updateUI(); // 重新渲染 (注意：原生存取會失去焦點，簡單實作先這樣。如要完美需 debounce 或抽離 value)
+          
+          // 恢復焦點
+          const newInputs = document.querySelectorAll('.col-filter-input');
+          newInputs.forEach(ni => {
+             if(ni.getAttribute('data-col-index') === colIdx) {
+                ni.focus();
+                // 設定游標到最後
+                const val = ni.value;
+                ni.value = '';
+                ni.value = val;
+             }
+          });
         });
-      };
+      });
 
-      const filteredData = useMemo(() => {
-        if (!data || data.length === 0) return [];
-        return data.filter(row => {
-          if (globalSearch) {
-            const searchLower = globalSearch.toLowerCase();
-            const matchesGlobal = row.cells.some(cell => String(cell).toLowerCase().includes(searchLower));
-            if (!matchesGlobal) return false;
-          }
-          for (const [colIdx, term] of Object.entries(columnFilters)) {
-            if (term) {
-              const cellValue = String(row.cells[colIdx] || '').toLowerCase();
-              if (!cellValue.includes(term.toLowerCase())) return false;
+      // 4. 渲染表身
+      if (filtered.length > 0) {
+        let bodyHtml = '';
+        filtered.forEach(row => {
+          const isExcluded = state.excludedRowIds.has(row.id);
+          const trClass = isExcluded ? 'row-excluded' : 'row-included bg-white group cursor-pointer transition-all';
+          const iconHtml = isExcluded 
+            ? `<i data-lucide="ban" class="w-4 h-4 text-red-500 mx-auto"></i>` 
+            : `<i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-400 mx-auto check-icon"></i>`;
+          
+          let cellsHtml = '';
+          state.headers.forEach((header, colIndex) => {
+            const rawContent = row.cells[colIndex] || '';
+            const isInsta = header.toLowerCase().includes('instagram') || header.toLowerCase() === 'ig';
+            let contentHtml = '';
+
+            if (rawContent.startsWith('http://') || rawContent.startsWith('https://')) {
+              const linkClass = isExcluded ? 'text-red-800/60' : 'text-blue-600';
+              contentHtml = `<a href="${escapeHTML(rawContent)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 hover:underline truncate max-w-full ${linkClass}" onclick="event.stopPropagation()">
+                ${escapeHTML(rawContent)} <i data-lucide="external-link" class="w-3 h-3 flex-shrink-0 opacity-50"></i>
+              </a>`;
+            } else if (isInsta && !rawContent.includes(' ')) {
+              let account = rawContent;
+              if (account.includes('/')) account = account.split('/')[0].trim();
+              account = account.replace(/^@/, '');
+              if (account) {
+                 const linkClass = isExcluded ? 'text-red-800/60' : 'text-pink-600';
+                 contentHtml = `<div class="flex flex-col gap-1">
+                   <span class="truncate">${escapeHTML(rawContent)}</span>
+                   <a href="https://instagram.com/${escapeHTML(account)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs hover:underline w-fit ${linkClass}" onclick="event.stopPropagation()">
+                    @ ${escapeHTML(account)} <i data-lucide="external-link" class="w-2.5 h-2.5 flex-shrink-0 opacity-50"></i>
+                   </a>
+                 </div>`;
+              } else {
+                 contentHtml = `<span class="truncate block" title="${escapeHTML(rawContent)}">${escapeHTML(rawContent)}</span>`;
+              }
+            } else {
+              contentHtml = `<span class="truncate block" title="${escapeHTML(rawContent)}">${escapeHTML(rawContent)}</span>`;
             }
-          }
-          return true;
+
+            const tdClass = isExcluded ? 'text-red-800/60 line-through' : 'text-slate-700';
+            cellsHtml += `<td class="px-4 py-3 max-w-[200px] 2xl:max-w-xs ${tdClass}">${contentHtml}</td>`;
+          });
+
+          bodyHtml += `
+            <tr data-row-id="${row.id}" class="${trClass}" title="雙擊以切換排除狀態 (網址請單擊圖示或文字)">
+              <td class="px-3 py-3 text-center align-middle">${iconHtml}</td>
+              ${cellsHtml}
+            </tr>
+          `;
         });
-      }, [data, globalSearch, columnFilters]);
+        tableBody.innerHTML = bodyHtml;
 
-      const rowsToExport = useMemo(() => {
-        return filteredData.filter(row => !excludedRowIds.has(row.id)).map(row => row.cells);
-      }, [filteredData, excludedRowIds]);
+        // 綁定雙擊事件
+        document.querySelectorAll('tr[data-row-id]').forEach(tr => {
+          tr.addEventListener('dblclick', (e) => {
+            if (window.getSelection) window.getSelection().removeAllRanges();
+            const id = tr.getAttribute('data-row-id');
+            if (state.excludedRowIds.has(id)) {
+              state.excludedRowIds.delete(id);
+            } else {
+              state.excludedRowIds.add(id);
+            }
+            updateUI();
+          });
+        });
 
-      const handleExport = () => {
-        if (rowsToExport.length === 0) {
-          alert("沒有可匯出的資料！");
-          return;
+      } else {
+        tableBody.innerHTML = `
+          <tr>
+            <td colspan="${state.headers.length + 1}" class="px-6 py-16 text-center text-slate-500">
+              <div class="flex flex-col items-center justify-center gap-3">
+                <i data-lucide="search" class="w-10 h-10 text-slate-300"></i>
+                <p class="text-base">找不到符合條件的資料</p>
+                <button id="btn-empty-clear" class="text-indigo-600 hover:text-indigo-700 hover:underline text-sm font-medium">清除所有篩選條件</button>
+              </div>
+            </td>
+          </tr>
+        `;
+        document.getElementById('btn-empty-clear')?.addEventListener('click', () => {
+          state.globalSearch = '';
+          state.columnFilters = {};
+          globalSearchInput.value = '';
+          updateUI();
+        });
+      }
+
+      footerStatus.innerHTML = `顯示 ${filtered.length} 筆結果 (將匯出 <strong class="text-indigo-600">${rowsToExportCount}</strong> 筆)`;
+      lucide.createIcons(); // 重新渲染剛注入的圖示
+    };
+
+    // --- 檔案處理邏輯 ---
+    const processFile = (file) => {
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.csv')) {
+        alert('請上傳 CSV 格式的檔案！'); 
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target.result;
+        const { headers, data } = parseCSV(text);
+        
+        if (data.length > 0) {
+          state.fileName = file.name;
+          state.headers = headers;
+          state.data = data;
+          state.globalSearch = '';
+          state.columnFilters = {};
+          state.excludedRowIds = new Set();
+          globalSearchInput.value = '';
+          updateUI();
+        } else {
+          alert('無法解析檔案或檔案為空。');
         }
-        const csvContent = unparseCSV(headers, rowsToExport);
-        // BOM (0xEF 0xBB 0xBF) ensures Excel and other apps open the UTF-8 CSV correctly
-        const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-        const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
-
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.setAttribute("href", url);
-        link.setAttribute("download", `filtered_${fileName || 'export.csv'}`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
       };
+      reader.readAsText(file, 'UTF-8');
+    };
 
-      const promptClearAll = () => {
-        setShowConfirmModal(true);
-      };
+    // --- 事件綁定 ---
+    
+    // 點擊上傳 (按鈕與空狀態區塊)
+    const triggerUpload = () => fileInput.click();
+    btnUpload.addEventListener('click', triggerUpload);
+    emptyState.addEventListener('click', triggerUpload);
+    
+    fileInput.addEventListener('change', (e) => {
+      processFile(e.target.files[0]);
+      e.target.value = '';
+    });
 
-      const handleClearAll = () => {
-        setFileName('');
-        setHeaders([]);
-        setData([]);
-        setGlobalSearch('');
-        setColumnFilters({});
-        setExcludedRowIds(new Set());
-        setShowConfirmModal(false);
-      };
+    // 拖拉事件
+    let dragCount = 0;
+    document.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      dragCount++;
+      if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+        dragOverlay.classList.remove('hidden');
+        dropZone.classList.replace('bg-slate-50', 'bg-indigo-50');
+      }
+    });
 
-      const isFiltered = globalSearch !== '' || Object.values(columnFilters).some(v => v !== '');
+    document.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dragCount--;
+      if (dragCount === 0) {
+        dragOverlay.classList.add('hidden');
+        dropZone.classList.replace('bg-indigo-50', 'bg-slate-50');
+      }
+    });
 
-      // --- 內容渲染輔助函數 ---
-      const renderCellContent = (content, headerName, isExcluded) => {
-        const strContent = String(content || '');
-        if (!strContent) return '';
+    document.addEventListener('dragover', (e) => e.preventDefault());
 
-        if (strContent.startsWith('http://') || strContent.startsWith('https://')) {
-          return (
-            <a
-              href={strContent}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`inline-flex items-center gap-1 hover:underline truncate max-w-full ${isExcluded ? 'text-red-800/60' : 'text-blue-600'}`}
-              onClick={(e) => e.stopPropagation()}
-            >
-              {strContent}
-              <ExternalLink size={12} className="flex-shrink-0 opacity-50" />
-            </a>
-          );
+    document.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragCount = 0;
+      dragOverlay.classList.add('hidden');
+      dropZone.classList.replace('bg-indigo-50', 'bg-slate-50');
+      
+      const files = e.dataTransfer.files;
+      if (files && files.length > 0) {
+        processFile(files[0]);
+      }
+    });
+
+    // 搜尋與過濾
+    globalSearchInput.addEventListener('input', (e) => {
+      state.globalSearch = e.target.value;
+      updateUI();
+    });
+
+    btnClearSearch.addEventListener('click', () => {
+      state.globalSearch = '';
+      globalSearchInput.value = '';
+      updateUI();
+    });
+
+    btnClearFilters.addEventListener('click', () => {
+      state.globalSearch = '';
+      state.columnFilters = {};
+      globalSearchInput.value = '';
+      updateUI();
+    });
+
+    // 匯出功能
+    btnExport.addEventListener('click', () => {
+      let filtered = state.data;
+      if (state.globalSearch) {
+        const lowerSearch = state.globalSearch.toLowerCase();
+        filtered = filtered.filter(row => row.cells.some(cell => String(cell).toLowerCase().includes(lowerSearch)));
+      }
+      for (const [colIdx, term] of Object.entries(state.columnFilters)) {
+        if (term) {
+          const lowerTerm = term.toLowerCase();
+          filtered = filtered.filter(row => String(row.cells[colIdx] || '').toLowerCase().includes(lowerTerm));
         }
+      }
+      
+      const rowsToExport = filtered.filter(row => !state.excludedRowIds.has(row.id)).map(row => row.cells);
+      
+      if (rowsToExport.length === 0) {
+        alert("沒有可匯出的資料！");
+        return;
+      }
+      
+      const csvContent = unparseCSV(state.headers, rowsToExport);
+      const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+      const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
+      
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `filtered_${state.fileName || 'export.csv'}`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
 
-        const isInstagramCol = headerName.toLowerCase().includes('instagram') || headerName.toLowerCase() === 'ig';
-        if (isInstagramCol && !strContent.includes(' ')) {
-          let account = strContent;
-          if (account.includes('/')) {
-            account = account.split('/')[0].trim();
-          }
-          account = account.replace(/^@/, '');
+    // 關閉確認視窗
+    btnPromptClose.addEventListener('click', () => {
+      modalExcludedCount.textContent = `標記排除 (${state.excludedRowIds.size} 筆)`;
+      confirmModal.classList.remove('hidden');
+    });
 
-          if (account && account.length > 0 && !account.includes(' ')) {
-            return (
-              <div className="flex flex-col gap-1">
-                <span className="truncate">{strContent}</span>
-                <a
-                  href={`https://instagram.com/${account}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`inline-flex items-center gap-1 text-xs hover:underline w-fit ${isExcluded ? 'text-red-800/60' : 'text-pink-600'}`}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  @ {account}
-                  <ExternalLink size={10} className="flex-shrink-0 opacity-50" />
-                </a>
-              </div>
-            );
-          }
-        }
+    btnCancelClose.addEventListener('click', () => {
+      confirmModal.classList.add('hidden');
+    });
 
-        return <span className="truncate block" title={strContent}>{strContent}</span>;
+    btnConfirmClose.addEventListener('click', () => {
+      state = {
+        fileName: '',
+        headers: [],
+        data: [],
+        globalSearch: '',
+        columnFilters: {},
+        excludedRowIds: new Set(),
+        isDragging: false
       };
+      globalSearchInput.value = '';
+      confirmModal.classList.add('hidden');
+      updateUI();
+    });
 
-      return (
-        <div
-          className={`min-h-screen font-sans relative transition-colors duration-200 ${
-            isDragging ? 'bg-indigo-50' : 'bg-slate-50'
-          }`}
-          onDragEnter={handleDragEnter}
-          onDragLeave={handleDragLeave}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-        >
-          {/* 拖拉遮罩 */}
-          {isDragging && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-indigo-500/10 backdrop-blur-sm border-4 border-indigo-500 border-dashed m-4 rounded-3xl pointer-events-none">
-              <div className="bg-white p-8 rounded-2xl shadow-xl flex flex-col items-center gap-4">
-                <FileUp size={64} className="text-indigo-600 animate-bounce" />
-                <h2 className="text-2xl font-bold text-slate-800">放開滑鼠即可載入 CSV</h2>
-                <p className="text-slate-500">放開以覆蓋並讀取您的檔案</p>
-              </div>
-            </div>
-          )}
+    // 離開網頁防護
+    window.addEventListener('beforeunload', (e) => {
+      if (state.data.length > 0) {
+        const message = '您還有未匯出的資料，確定要離開嗎？';
+        e.returnValue = message;
+        return message;
+      }
+    });
 
-          {/* 關閉檔案確認 Modal */}
-          {showConfirmModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
-              <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full overflow-hidden scale-in-95 duration-200">
-                <div className="p-6">
-                  <div className="flex items-center justify-center w-12 h-12 bg-red-100 rounded-full mb-4 mx-auto">
-                    <AlertTriangle className="text-red-600 w-6 h-6" />
-                  </div>
-                  <h3 className="text-lg font-bold text-slate-900 text-center mb-2">確定要關閉檔案嗎？</h3>
-                  <p className="text-slate-500 text-sm text-center">
-                    這將會清除您目前所有的過濾條件，以及<strong className="text-red-500 font-medium">標記排除 ({excludedRowIds.size} 筆)</strong>的紀錄。此動作無法復原。
-                  </p>
-                </div>
-                <div className="bg-slate-50 px-6 py-4 flex gap-3 justify-end border-t border-slate-100">
-                  <button
-                    onClick={() => setShowConfirmModal(false)}
-                    className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors flex-1 md:flex-none"
-                  >
-                    取消
-                  </button>
-                  <button
-                    onClick={handleClearAll}
-                    className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors flex-1 md:flex-none"
-                  >
-                    確定關閉
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+    // 初始化狀態
+    updateUI();
 
-          <div className="p-4 md:p-8 max-w-[1400px] mx-auto space-y-4">
-
-            {/* 頂部操作列 */}
-            <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-5 rounded-2xl shadow-sm border border-slate-200 relative z-10">
-              <div>
-                <h1 className="text-2xl font-bold flex items-center gap-2 text-slate-900">
-                  <FileText className="text-indigo-600" />
-                  名單篩選與匯出工具
-                </h1>
-                <p className="text-slate-500 mt-1 text-sm flex items-center gap-1.5">
-                  <Info size={14} className="text-indigo-400" />
-                  支援直接拖拉檔案 / 雙擊資料可標記為排除 / 網址可直接點擊
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3 w-full md:w-auto">
-                <input
-                  type="file"
-                  accept=".csv"
-                  className="hidden"
-                  ref={fileInputRef}
-                  onChange={handleFileUpload}
-                />
-                <button
-                  onClick={() => fileInputRef.current.click()}
-                  className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-lg transition-colors font-medium shadow-sm"
-                >
-                  <Upload size={18} />
-                  {fileName ? '選擇其他檔案' : '上傳 CSV'}
-                </button>
-
-                {data.length > 0 && (
-                  <button
-                    onClick={handleExport}
-                    disabled={rowsToExport.length === 0}
-                    className={`flex-1 md:flex-none flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg transition-colors font-medium shadow-sm ${
-                      rowsToExport.length > 0
-                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                    }`}
-                  >
-                    <Download size={18} />
-                    匯出結果 ({rowsToExport.length})
-                  </button>
-                )}
-              </div>
-            </header>
-
-            {data.length > 0 ? (
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col relative z-10">
-
-                {/* 篩選控制區塊 */}
-                <div className="p-4 border-b border-slate-200 bg-slate-50/50">
-                  <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
-
-                    {/* 狀態標籤 */}
-                    <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
-                      <span className="bg-indigo-100 text-indigo-800 text-xs font-semibold px-2.5 py-1.5 rounded-md whitespace-nowrap">
-                        名單：{fileName}
-                      </span>
-                      <span className="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-1.5 rounded-md whitespace-nowrap">
-                        總覽：{filteredData.length} 筆
-                      </span>
-                      {excludedRowIds.size > 0 && (
-                        <span className="bg-red-100 text-red-700 text-xs font-semibold px-2.5 py-1.5 rounded-md whitespace-nowrap flex items-center gap-1">
-                          <Ban size={12} />
-                          已排除：{filteredData.filter(r => excludedRowIds.has(r.id)).length} 筆
-                        </span>
-                      )}
-                    </div>
-
-                    {/* 右側控制：搜尋與清除 */}
-                    <div className="flex gap-3 w-full md:w-auto items-center">
-                      <div className="relative w-full md:w-64 group">
-                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                          <Search size={16} className="text-slate-400 group-focus-within:text-indigo-500" />
-                        </div>
-                        <input
-                          type="text"
-                          className="block w-full pl-9 pr-8 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white transition-shadow text-sm"
-                          placeholder="全域搜尋..."
-                          value={globalSearch}
-                          onChange={(e) => setGlobalSearch(e.target.value)}
-                        />
-                        {globalSearch && (
-                          <button
-                            onClick={() => setGlobalSearch('')}
-                            className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600"
-                          >
-                            <X size={14} />
-                          </button>
-                        )}
-                      </div>
-
-                      {isFiltered && (
-                        <button
-                          onClick={() => {
-                            setGlobalSearch('');
-                            setColumnFilters({});
-                          }}
-                          title="清除過濾條件"
-                          className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                        >
-                          <Filter size={18} />
-                        </button>
-                      )}
-                      <button
-                        onClick={promptClearAll}
-                        title="關閉並清除資料"
-                        className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                      >
-                        <Trash2 size={18} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 資料表格 */}
-                <div className="overflow-x-auto relative max-h-[65vh]">
-                  <table className="w-full text-left text-sm text-slate-600">
-                    <thead className="text-xs text-slate-700 uppercase bg-slate-100 sticky top-0 z-10 shadow-sm">
-                      <tr>
-                        <th className="px-3 py-3 border-b border-slate-200 w-12 text-center bg-slate-100">狀態</th>
-                        {headers.map((header, index) => (
-                          <th key={index} className="px-4 py-3 border-b border-slate-200 whitespace-nowrap min-w-[140px] bg-slate-100">
-                            <div className="flex flex-col gap-2">
-                              <span className="font-semibold text-slate-800">{header}</span>
-                              <input
-                                type="text"
-                                placeholder={`篩選 ${header}...`}
-                                className="w-full px-2 py-1.5 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 font-normal normal-case placeholder-slate-400 bg-white shadow-sm"
-                                value={columnFilters[index] || ''}
-                                onChange={(e) => handleColumnFilterChange(index, e.target.value)}
-                              />
-                            </div>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {filteredData.length > 0 ? (
-                        filteredData.map((row) => {
-                          const isExcluded = excludedRowIds.has(row.id);
-                          return (
-                            <tr
-                              key={row.id}
-                              onDoubleClick={() => handleDoubleClickRow(row.id)}
-                              className={`group transition-all cursor-pointer ${
-                                isExcluded
-                                ? 'bg-red-50/80 hover:bg-red-100'
-                                : 'bg-white hover:bg-indigo-50/40'
-                              }`}
-                              title="雙擊以切換排除狀態 (網址請單擊圖示或文字)"
-                            >
-                              <td className="px-3 py-3 text-center align-middle">
-                                {isExcluded ? (
-                                  <Ban size={16} className="text-red-500 mx-auto" />
-                                ) : (
-                                  <CheckCircle2 size={16} className="text-emerald-400 mx-auto opacity-0 group-hover:opacity-100 transition-opacity" />
-                                )}
-                              </td>
-                              {headers.map((header, colIndex) => (
-                                <td
-                                  key={colIndex}
-                                  className={`px-4 py-3 max-w-[200px] 2xl:max-w-xs ${
-                                    isExcluded ? 'text-red-800/60 line-through' : 'text-slate-700'
-                                  }`}
-                                >
-                                  {renderCellContent(row.cells[colIndex], header, isExcluded)}
-                                </td>
-                              ))}
-                            </tr>
-                          );
-                        })
-                      ) : (
-                        <tr>
-                          <td colSpan={headers.length + 1} className="px-6 py-16 text-center text-slate-500">
-                            <div className="flex flex-col items-center justify-center gap-3">
-                              <Search className="w-10 h-10 text-slate-300" />
-                              <p className="text-base">找不到符合條件的資料</p>
-                              <button
-                                onClick={() => { setGlobalSearch(''); setColumnFilters({}); }}
-                                className="text-indigo-600 hover:text-indigo-700 hover:underline text-sm font-medium"
-                              >
-                                清除所有篩選條件
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* 底部狀態列 */}
-                <div className="bg-slate-50 px-5 py-3 border-t border-slate-200 text-xs text-slate-500 flex justify-between items-center">
-                  <span>
-                    顯示 {filteredData.length} 筆結果
-                    (將匯出 <strong className="text-indigo-600">{rowsToExport.length}</strong> 筆)
-                  </span>
-                  <span className="hidden md:inline text-slate-400">
-                    提示：直接雙擊行即可標記為排除 (紅色) / 點擊藍色文字可開啟網頁
-                  </span>
-                </div>
-              </div>
-            ) : (
-              /* 初始空狀態 */
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                className="bg-white rounded-2xl shadow-sm border-2 border-indigo-100 hover:border-indigo-300 border-dashed p-12 flex flex-col items-center justify-center text-center space-y-5 min-h-[500px] cursor-pointer transition-colors relative z-10 group"
-              >
-                <div className="w-20 h-20 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
-                  <FileUp size={40} />
-                </div>
-                <div>
-                  <h3 className="text-xl font-bold text-slate-800 mb-2">將 CSV 檔案拖放至此</h3>
-                  <p className="text-slate-500 max-w-md mx-auto leading-relaxed">
-                    或點擊此處選擇檔案。<br/>上傳後您可以輕鬆篩選欄位、<strong className="text-red-500">雙擊剔除不要的名單</strong>，最後匯出乾淨的 CSV。
-                  </p>
-                </div>
-                <button aria-hidden="true" className="mt-2 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl transition-all font-medium pointer-events-none">
-                  <Upload size={20} />
-                  選擇 CSV 檔案
-                </button>
-              </div>
-            )}
-
-          </div>
-        </div>
-      );
-    }
-
-    createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
 </html>
