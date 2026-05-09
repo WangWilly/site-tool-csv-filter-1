@@ -238,6 +238,7 @@
           return;
         }
         const csvContent = unparseCSV(headers, rowsToExport);
+        // BOM (0xEF 0xBB 0xBF) ensures Excel and other apps open the UTF-8 CSV correctly
         const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
         const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
 
@@ -588,7 +589,7 @@
                     或點擊此處選擇檔案。<br/>上傳後您可以輕鬆篩選欄位、<strong className="text-red-500">雙擊剔除不要的名單</strong>，最後匯出乾淨的 CSV。
                   </p>
                 </div>
-                <button className="mt-2 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl transition-all font-medium pointer-events-none">
+                <button aria-hidden="true" className="mt-2 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl transition-all font-medium pointer-events-none">
                   <Upload size={20} />
                   選擇 CSV 檔案
                 </button>
